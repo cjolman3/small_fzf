@@ -119,7 +119,11 @@ std::string query;
 void worker(BQueue<std::string>& q) {
     std::string path;
     while (q.pop(path)) {
-        int s = fuzzy_score(query, path);
+        // Score on filename first; fall back to full path if no match.
+        size_t slash = path.rfind('/');
+        std::string fname = (slash == std::string::npos) ? path : path.substr(slash + 1);
+        int s = fuzzy_score(query, fname);
+        if (s < 0) s = fuzzy_score(query, path);
         if (s < 0) continue;
 
         if (files_mode) {
