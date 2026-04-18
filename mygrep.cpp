@@ -1,5 +1,6 @@
 // mygrep.cpp - minimal multicore fuzzy find + grep
 // Build: g++ -O2 -std=c++17 -pthread mygrep.cpp -o mygrep
+// g++ -O2 -std=c++17 -pthread -c mygrep.cpp -o obj/mygrep.o && g++ -O2 -std=c++17 -pthread obj/mygrep.o -o bin/mygrep
 // Usage: mygrep [--files] <query> [path]
 // --files : fd-mode (print matching paths only)
 // default : rg-mode (print matching lines in files whose paths match query)
