@@ -118,7 +118,8 @@ std::string query;
 // ---------- worker ----------
 void worker(BQueue<std::string>& q) {
     std::string path;
-    while (q.pop(path)) {
+    while (q.pop(path))
+    {
         // Score on filename first; fall back to full path if no match.
         size_t slash = path.rfind('/');
         std::string fname = (slash == std::string::npos) ? path : path.substr(slash + 1);
@@ -126,31 +127,8 @@ void worker(BQueue<std::string>& q) {
         if (s < 0) s = fuzzy_score(query, path);
         if (s < 0) continue;
 
-        if (files_mode) {
-            std::lock_guard<std::mutex> lk(cout_mtx);
-            std::cout << path << '\n';
-            continue;
-        }
-
-        // rg-mode: scan lines in the file for the query as substring
-        std::ifstream in(path, std::ios::binary);
-        if (!in) continue;
-        std::string buf((std::istreambuf_iterator<char>(in)), {});
-        if (buf.empty()) continue;
-        if (looks_binary(buf.data(), buf.size())) continue;
-
-        size_t lineno = 1, start = 0;
-        for (size_t i = 0; i <= buf.size(); ++i) {
-            if (i == buf.size() || buf[i] == '\n') {
-                std::string line(buf.data() + start, i - start);
-                if (icontains(line, query)) {
-                    std::lock_guard<std::mutex> lk(cout_mtx);
-                    std::cout << path << ':' << lineno << ':' << line << '\n';
-                }
-                start = i + 1;
-                ++lineno;
-            }
-        }
+        std::lock_guard<std::mutex> lk(cout_mtx);
+        std::cout << path << '\n';
     }
 }
 
