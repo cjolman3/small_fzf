@@ -1,4 +1,4 @@
-# mygrep: minimal multicore fuzzy find + grep
+# fzf: minimal multicore fuzzy find + grep
 
 A ~150-line standard C++17 tool that emulates the core of `fd | fzf` and
 `ripgrep` with no external dependencies. Builds with only a C++ compiler
@@ -7,14 +7,14 @@ and pthreads.
 ## Build
 
 ```
-g++ -O2 -std=c++17 -pthread mygrep.cpp -o mygrep
+g++ -O2 -std=c++17 -pthread fzf.cpp -o fzf
 ```
 
 ## Usage
 
 ```
-mygrep --files <query> [path] # fd-mode: print matching file paths
-mygrep <query> [path] # rg-mode: print matching lines in files whose paths fuzzy-match query
+fzf --files <query> [path] # fd-mode: print matching file paths
+fzf <query> [path] # rg-mode: print matching lines in files whose paths fuzzy-match query
 ```
 
 ## Architecture
