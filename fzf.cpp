@@ -1,10 +1,9 @@
-// fzf.cpp - minimal multicore fuzzy find + grep
+// fzf.cpp - minimal multicore fuzzy find + TUI
 // Build: g++ -O2 -std=c++17 -pthread fzf.cpp -o fzf
 // g++ -O2 -std=c++17 -pthread -c fzf.cpp -o obj/fzf.o && g++ -O2 -std=c++17 -pthread obj/fzf.o -o bin/fzf
-// Usage: fzf [--files] <query> [path]
-// --files : fd-mode (print matching paths only)
-// default : rg-mode (print matching lines in files whose paths match query)
+// Usage: fzf <query> [path]
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <condition_variable>
@@ -18,6 +17,10 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -61,6 +64,38 @@ public:
         { std::lock_guard<std::mutex> lk(m); done = true; }
         //wake everyone up so they can all see dont = true
         cv_pop.notify_all();
+    }
+};
+
+// ---------- match result ----------
+struct MatchResult {
+    std::string path;
+    int score;
+};
+
+// ---------- thread-safe results container ----------
+class MatchResults {
+    std::vector<MatchResult> results;
+    std::mutex mtx;
+public:
+    void add(std::string path, int score) {
+        std::lock_guard<std::mutex> lk(mtx);
+        results.push_back({std::move(path), score});
+    }
+
+    std::vector<MatchResult> sorted() {
+        std::lock_guard<std::mutex> lk(mtx);
+        auto copy = results;
+        std::sort(copy.begin(), copy.end(),
+                  [](const MatchResult& a, const MatchResult& b) {
+                      return a.score > b.score;
+                  });
+        return copy;
+    }
+
+    size_t size() {
+        std::lock_guard<std::mutex> lk(mtx);
+        return results.size();
     }
 };
 
@@ -112,9 +147,7 @@ static const std::unordered_set<std::string> SKIP_DIRS = {
 };
 
 // ---------- globals ----------
-//this is a mutex to make sure workers dont all cout at same time
-std::mutex cout_mtx;
-bool files_mode = false;
+MatchResults match_results;
 std::string query;
 
 // ---------- worker ----------
@@ -130,11 +163,164 @@ void worker(BQueue<std::string>& q) {
         if (s < 0) s = fuzzy_score(query, path);
         if (s < 0) continue;
 
-        //make sure we can print
-        std::lock_guard<std::mutex> lk(cout_mtx);
-        //we did it! print to cmd line
-        std::cout << path << '\n';
+        match_results.add(path, s);
     }
+}
+
+// ---------- TUI ----------
+struct Terminal {
+    struct termios orig;
+    int rows, cols;
+
+    void enter_raw() {
+        tcgetattr(STDIN_FILENO, &orig);
+        struct termios raw = orig;
+        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 1;
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+    }
+
+    void restore() {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig);
+    }
+
+    void update_size() {
+        struct winsize ws;
+        ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
+        rows = ws.ws_row;
+        cols = ws.ws_col;
+    }
+};
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
+void write_stderr(const std::string& s) {
+    write(STDERR_FILENO, s.data(), s.size());
+}
+#pragma GCC diagnostic pop
+
+enum class Key { UP, DOWN, ENTER, QUIT, NONE };
+
+Key read_key() {
+    char c;
+    if (read(STDIN_FILENO, &c, 1) != 1) return Key::NONE;
+
+    if (c == '\n' || c == '\r') return Key::ENTER;
+    if (c == 'q') return Key::QUIT;
+    if (c == 'k') return Key::UP;
+    if (c == 'j') return Key::DOWN;
+
+    if (c == '\033') {
+        char seq[2];
+        if (read(STDIN_FILENO, &seq[0], 1) != 1) return Key::QUIT;
+        if (read(STDIN_FILENO, &seq[1], 1) != 1) return Key::QUIT;
+        if (seq[0] == '[') {
+            if (seq[1] == 'A') return Key::UP;
+            if (seq[1] == 'B') return Key::DOWN;
+        }
+        return Key::NONE;
+    }
+    return Key::NONE;
+}
+
+void run_tui() {
+    auto results = match_results.sorted();
+    if (results.empty()) {
+        std::cerr << "No matches found.\n";
+        return;
+    }
+
+    Terminal term;
+    term.update_size();
+    term.enter_raw();
+
+    // alternate screen buffer, hide cursor
+    std::string buf;
+    buf += "\033[?1049h\033[?25l";
+    write_stderr(buf);
+
+    int selected = 0;
+    int offset = 0;
+    int visible = term.rows - 2;
+
+    auto draw = [&]() {
+        buf.clear();
+        buf += "\033[H"; // cursor home
+
+        // header
+        buf += "\033[1;37;44m fzf > ";
+        buf += query;
+        int pad = term.cols - 7 - (int)query.size();
+        if (pad > 0) buf.append(pad, ' ');
+        buf += "\033[0m\n";
+
+        // results
+        for (int i = 0; i < visible; ++i) {
+            int idx = offset + i;
+            if (idx < (int)results.size()) {
+                if (idx == selected) {
+                    buf += "\033[1;33m> ";
+                    buf += results[idx].path;
+                    buf += "\033[0m";
+                } else {
+                    buf += "  ";
+                    buf += results[idx].path;
+                }
+            }
+            buf += "\033[K\n"; // clear to end of line
+        }
+
+        // footer
+        buf += "\033[";
+        buf += std::to_string(term.rows);
+        buf += ";1H";
+        buf += "\033[1;37;44m ";
+        buf += std::to_string(results.size());
+        buf += " matches | \xe2\x86\x91\xe2\x86\x93/jk navigate | Enter select | q quit";
+        int fpad = term.cols - 52;
+        if (fpad > 0) buf.append(fpad, ' ');
+        buf += "\033[0m";
+
+        write_stderr(buf);
+    };
+
+    draw();
+
+    bool running = true;
+    while (running) {
+        Key k = read_key();
+        switch (k) {
+        case Key::UP:
+            if (selected > 0) --selected;
+            if (selected < offset) offset = selected;
+            break;
+        case Key::DOWN:
+            if (selected < (int)results.size() - 1) ++selected;
+            if (selected >= offset + visible) offset = selected - visible + 1;
+            break;
+        case Key::ENTER:
+            // restore terminal, print selection to stdout
+            buf.clear();
+            buf += "\033[?25h\033[?1049l";
+            write_stderr(buf);
+            term.restore();
+            std::cout << results[selected].path << '\n';
+            return;
+        case Key::QUIT:
+            running = false;
+            break;
+        case Key::NONE:
+            break;
+        }
+        draw();
+    }
+
+    // restore terminal without printing selection
+    buf.clear();
+    buf += "\033[?25h\033[?1049l";
+    write_stderr(buf);
+    term.restore();
 }
 
 // ---------- main ----------
@@ -142,12 +328,11 @@ int main(int argc, char** argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
     std::string root = ".";
     for (size_t i = 0; i < args.size(); ++i) {
-        if (args[i] == "--files") files_mode = true;
-        else if (query.empty()) query = args[i];
+        if (query.empty()) query = args[i];
         else root = args[i];
     }
     if (query.empty()) {
-        std::cerr << "usage: fzf [--files] <query> [path]\n";
+        std::cerr << "usage: fzf <query> [path]\n";
         return 1;
     }
 
@@ -176,5 +361,7 @@ int main(int argc, char** argv) {
     }
     q.close();
     for (auto& t : workers) t.join();
+
+    run_tui();
     return 0;
 }
