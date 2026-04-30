@@ -19,10 +19,9 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+#include <ncurses.h>
 
 #include <fcntl.h>
-#include <sys/ioctl.h>
-#include <termios.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -172,59 +171,14 @@ void worker(BQueue<std::string>& q) {
 }
 
 // ---------- TUI ----------
-struct Terminal {
-    struct termios orig;
-    int rows, cols;
-
-    void enter_raw() {
-        tcgetattr(tty_fd, &orig);
-        struct termios raw = orig;
-        raw.c_lflag &= ~(ICANON | ECHO);
-        raw.c_cc[VMIN] = 0;
-        raw.c_cc[VTIME] = 1;
-        tcsetattr(tty_fd, TCSAFLUSH, &raw);
-    }
-
-    void restore() {
-        tcsetattr(tty_fd, TCSAFLUSH, &orig);
-    }
-
-    void update_size() {
-        struct winsize ws;
-        ioctl(tty_fd, TIOCGWINSZ, &ws);
-        rows = ws.ws_row;
-        cols = ws.ws_col;
-    }
-};
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-result"
-void write_stderr(const std::string& s) {
-    write(STDERR_FILENO, s.data(), s.size());
-}
-#pragma GCC diagnostic pop
-
 enum class Key { UP, DOWN, ENTER, QUIT, NONE };
 
 Key read_key() {
-    char c;
-    if (read(tty_fd, &c, 1) != 1) return Key::NONE;
-
-    if (c == '\n' || c == '\r') return Key::ENTER;
-    if (c == 'q') return Key::QUIT;
-    if (c == 'k') return Key::UP;
-    if (c == 'j') return Key::DOWN;
-
-    if (c == '\033') {
-        char seq[2];
-        if (read(tty_fd, &seq[0], 1) != 1) return Key::QUIT;
-        if (read(tty_fd, &seq[1], 1) != 1) return Key::QUIT;
-        if (seq[0] == '[') {
-            if (seq[1] == 'A') return Key::UP;
-            if (seq[1] == 'B') return Key::DOWN;
-        }
-        return Key::NONE;
-    }
+    int ch = getch();
+    if (ch == KEY_UP || ch == 'k') return Key::UP;
+    if (ch == KEY_DOWN || ch == 'j') return Key::DOWN;
+    if (ch == 10 || ch == 13) return Key::ENTER;
+    if (ch == 'q') return Key::QUIT;
     return Key::NONE;
 }
 
@@ -235,58 +189,45 @@ void run_tui() {
         return;
     }
 
-    Terminal term;
-    term.update_size();
-    term.enter_raw();
-
-    // alternate screen buffer, hide cursor
-    std::string buf;
-    buf += "\033[?1049h\033[?25l";
-    write_stderr(buf);
+    initscr();
+    noecho();
+    cbreak();
+    keypad(stdscr, TRUE);
+    curs_set(0);
 
     int selected = 0;
     int offset = 0;
-    int visible = term.rows - 2;
 
     auto draw = [&]() {
-        buf.clear();
-        buf += "\033[H"; // cursor home
+        int rows, cols;
+        getmaxy(stdscr, rows);
+        getmaxx(stdscr, cols);
+        int visible = rows - 2;
+
+        erase();
 
         // header
-        buf += "\033[1;37;44m fzf > ";
-        buf += query;
-        int pad = term.cols - 7 - (int)query.size();
-        if (pad > 0) buf.append(pad, ' ');
-        buf += "\033[0m\n";
+        attron(A_BOLD); 
+        mvprintw(0, 0, " fzf > %s", query.c_str());
+        attroff(A_BOLD);
 
         // results
         for (int i = 0; i < visible; ++i) {
             int idx = offset + i;
             if (idx < (int)results.size()) {
                 if (idx == selected) {
-                    buf += "\033[1;33m> ";
-                    buf += results[idx].path;
-                    buf += "\033[0m";
+                    attron(A_BOLD);
+                    mvprintw(i + 1, 0, "> %s", results[idx].path.c_str());
+                    attroff(A_BOLD);
                 } else {
-                    buf += "  ";
-                    buf += results[idx].path;
+                    mvprintw(i + 1, 0, "  %s", results[idx].path.c_str());
                 }
             }
-            buf += "\033[K\n"; // clear to end of line
         }
 
         // footer
-        buf += "\033[";
-        buf += std::to_string(term.rows);
-        buf += ";1H";
-        buf += "\033[1;37;44m ";
-        buf += std::to_string(results.size());
-        buf += " matches | \xe2\x86\x91\xe2\x86\x93/jk navigate | Enter select | q quit";
-        int fpad = term.cols - 52;
-        if (fpad > 0) buf.append(fpad, ' ');
-        buf += "\033[0m";
-
-        write_stderr(buf);
+        mvprintw(rows - 1, 0, "%d matches | ↑↓/jk navigate | Enter select | q quit", (int)results.size());
+        refresh();
     };
 
     draw();
@@ -294,6 +235,10 @@ void run_tui() {
     bool running = true;
     while (running) {
         Key k = read_key();
+        int rows, cols;
+        getmaxy(stdscr, rows);
+        int visible = rows - 2;
+
         switch (k) {
         case Key::UP:
             if (selected > 0) --selected;
@@ -304,11 +249,7 @@ void run_tui() {
             if (selected >= offset + visible) offset = selected - visible + 1;
             break;
         case Key::ENTER:
-            // restore terminal, print selection to stdout
-            buf.clear();
-            buf += "\033[?25h\033[?1049l";
-            write_stderr(buf);
-            term.restore();
+            endwin();
             std::cout << results[selected].path << '\n';
             return;
         case Key::QUIT:
@@ -320,11 +261,7 @@ void run_tui() {
         draw();
     }
 
-    // restore terminal without printing selection
-    buf.clear();
-    buf += "\033[?25h\033[?1049l";
-    write_stderr(buf);
-    term.restore();
+    endwin();
 }
 
 // ---------- main ----------
