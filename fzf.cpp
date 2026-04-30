@@ -191,7 +191,7 @@ struct Terminal {
 
     void update_size() {
         struct winsize ws;
-        ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
+        ioctl(tty_fd, TIOCGWINSZ, &ws);
         rows = ws.ws_row;
         cols = ws.ws_col;
     }
