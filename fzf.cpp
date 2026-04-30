@@ -7,6 +7,8 @@
 #include <atomic>
 #include <cctype>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +20,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include <fcntl.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -149,6 +152,7 @@ static const std::unordered_set<std::string> SKIP_DIRS = {
 // ---------- globals ----------
 MatchResults match_results;
 std::string query;
+int tty_fd = STDIN_FILENO;
 
 // ---------- worker ----------
 void worker(BQueue<std::string>& q) {
@@ -173,16 +177,16 @@ struct Terminal {
     int rows, cols;
 
     void enter_raw() {
-        tcgetattr(STDIN_FILENO, &orig);
+        tcgetattr(tty_fd, &orig);
         struct termios raw = orig;
         raw.c_lflag &= ~(ICANON | ECHO);
         raw.c_cc[VMIN] = 0;
         raw.c_cc[VTIME] = 1;
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+        tcsetattr(tty_fd, TCSAFLUSH, &raw);
     }
 
     void restore() {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig);
+        tcsetattr(tty_fd, TCSAFLUSH, &orig);
     }
 
     void update_size() {
@@ -204,7 +208,7 @@ enum class Key { UP, DOWN, ENTER, QUIT, NONE };
 
 Key read_key() {
     char c;
-    if (read(STDIN_FILENO, &c, 1) != 1) return Key::NONE;
+    if (read(tty_fd, &c, 1) != 1) return Key::NONE;
 
     if (c == '\n' || c == '\r') return Key::ENTER;
     if (c == 'q') return Key::QUIT;
@@ -213,8 +217,8 @@ Key read_key() {
 
     if (c == '\033') {
         char seq[2];
-        if (read(STDIN_FILENO, &seq[0], 1) != 1) return Key::QUIT;
-        if (read(STDIN_FILENO, &seq[1], 1) != 1) return Key::QUIT;
+        if (read(tty_fd, &seq[0], 1) != 1) return Key::QUIT;
+        if (read(tty_fd, &seq[1], 1) != 1) return Key::QUIT;
         if (seq[0] == '[') {
             if (seq[1] == 'A') return Key::UP;
             if (seq[1] == 'B') return Key::DOWN;
@@ -336,6 +340,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // when stdin is a pipe, keyboard input comes from /dev/tty instead
+    bool piped = !isatty(STDIN_FILENO);
+    if (piped) {
+        tty_fd = open("/dev/tty", O_RDONLY);
+        if (tty_fd < 0) {
+            std::cerr << "fzf: cannot open /dev/tty\n";
+            return 1;
+        }
+    }
+
     //get how many threads I have
     unsigned n = std::thread::hardware_concurrency();
     //if something went wrong just set threads to 4
@@ -347,21 +361,48 @@ int main(int argc, char** argv) {
     //spawn n threads
     for (unsigned i = 0; i < n; ++i) workers.emplace_back(worker, std::ref(q));
 
-    std::error_code ec;
-    fs::recursive_directory_iterator it(root,
-        fs::directory_options::skip_permission_denied, ec), end;
-    while (!ec && it != end) {
-        const auto& p = it->path();
-        if (it->is_directory(ec) && SKIP_DIRS.count(p.filename().string())) {
-            it.disable_recursion_pending();
-        } else if (it->is_regular_file(ec)) {
-            q.push(p.string());
+    if (piped) {
+        // read paths from stdin pipe
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            if (!line.empty()) q.push(std::move(line));
         }
-        it.increment(ec);
+    } else {
+        // check for FZF_DEFAULT_COMMAND env var
+        const char* cmd = std::getenv("FZF_DEFAULT_COMMAND");
+        if (cmd && cmd[0]) {
+            FILE* fp = popen(cmd, "r");
+            if (fp) {
+                char buf[4096];
+                while (std::fgets(buf, sizeof(buf), fp)) {
+                    std::string line(buf);
+                    if (!line.empty() && line.back() == '\n') line.pop_back();
+                    if (!line.empty()) q.push(std::move(line));
+                }
+                pclose(fp);
+            }
+        } else {
+            // built-in directory walker
+            std::error_code ec;
+            fs::recursive_directory_iterator it(root,
+                fs::directory_options::skip_permission_denied, ec), end;
+            while (!ec && it != end) {
+                const auto& p = it->path();
+                if (it->is_directory(ec) && SKIP_DIRS.count(p.filename().string())) {
+                    it.disable_recursion_pending();
+                } else if (it->is_regular_file(ec)) {
+                    q.push(p.string());
+                }
+                it.increment(ec);
+            }
+        }
     }
+
     q.close();
     for (auto& t : workers) t.join();
 
     run_tui();
+
+    if (piped && tty_fd != STDIN_FILENO) close(tty_fd);
     return 0;
 }
