@@ -329,17 +329,9 @@ void run_tui() {
 
 // ---------- main ----------
 int main(int argc, char** argv) {
-    std::vector<std::string> args(argv + 1, argv + argc);
-    std::string root = ".";
-    for (size_t i = 0; i < args.size(); ++i) {
-        if (query.empty()) query = args[i];
-        else root = args[i];
-    }
-    if (query.empty()) {
-        std::cerr << "usage: fzf <query> [path]\n";
-        return 1;
-    }
 
+    // check if we are being piped to first, if so we dont really even need
+    //      other args
     // when stdin is a pipe, keyboard input comes from /dev/tty instead
     bool piped = !isatty(STDIN_FILENO);
     if (piped) {
@@ -348,6 +340,33 @@ int main(int argc, char** argv) {
             std::cerr << "fzf: cannot open /dev/tty\n";
             return 1;
         }
+    }
+
+    std::vector<std::string> args(argv + 1, argv + argc);
+    std::string root = ".";
+    if (args.size() > 2)
+    {
+        std::cerr << "too many args, usage: fzf <query> [path]\n";
+    }
+    else if (args.size() == 2)
+    {
+        query = args[0];
+        root  = args[1];
+    }
+    else if (args.size() == 1)
+    {
+        query = args[0];
+    }
+    else if (args.size() == 0 && piped)
+    {
+        //dont really need to do anything here, just using fzf as a list picker
+        NULL;
+    }
+    else
+    {
+        //something is wrong with the arguments or usage
+        std::cerr << "usage: fzf <query> [path]\n";
+        return 1;
     }
 
     //get how many threads I have
