@@ -153,6 +153,7 @@ static const std::unordered_set<std::string> SKIP_DIRS = {
 MatchResults match_results;
 std::string query;
 int tty_fd = STDIN_FILENO;
+bool filter_mode = false;
 
 // ---------- worker ----------
 void worker(BQueue<std::string>& q) {
@@ -330,11 +331,19 @@ void run_tui() {
 // ---------- main ----------
 int main(int argc, char** argv) {
 
+    // parse flags first so we know if we need the TUI
+    std::vector<std::string> positional;
+    std::string root = ".";
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--filter") == 0) filter_mode = true;
+        else positional.push_back(argv[i]);
+    }
+
     // check if we are being piped to first, if so we dont really even need
     //      other args
     // when stdin is a pipe, keyboard input comes from /dev/tty instead
     bool piped = !isatty(STDIN_FILENO);
-    if (piped) {
+    if (piped && !filter_mode) {
         tty_fd = open("/dev/tty", O_RDONLY);
         if (tty_fd < 0) {
             std::cerr << "fzf: cannot open /dev/tty\n";
@@ -342,30 +351,29 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::vector<std::string> args(argv + 1, argv + argc);
-    std::string root = ".";
-    if (args.size() > 2)
+    if (positional.size() > 2)
     {
-        std::cerr << "too many args, usage: fzf <query> [path]\n";
+        std::cerr << "too many args, usage: fzf [--filter] <query> [path]\n";
     }
-    else if (args.size() == 2)
+    else if (positional.size() == 2)
     {
-        query = args[0];
-        root  = args[1];
+        query = positional[0];
+        root  = positional[1];
     }
-    else if (args.size() == 1)
+    else if (positional.size() == 1)
     {
-        query = args[0];
+        query = positional[0];
     }
-    else if (args.size() == 0 && piped)
+    else if (positional.size() == 0 && piped)
     {
         //dont really need to do anything here, just using fzf as a list picker
         NULL;
     }
+    //eventuall need something here if size is 0 and not piped just find all files
     else
     {
         //something is wrong with the arguments or usage
-        std::cerr << "usage: fzf <query> [path]\n";
+        std::cerr << "usage: fzf [--filter] <query> [path]\n";
         return 1;
     }
 
@@ -380,13 +388,16 @@ int main(int argc, char** argv) {
     //spawn n threads
     for (unsigned i = 0; i < n; ++i) workers.emplace_back(worker, std::ref(q));
 
-    if (piped) {
+    if (piped)
+    {
         // read paths from stdin pipe
         std::string line;
         while (std::getline(std::cin, line)) {
             if (!line.empty()) q.push(std::move(line));
         }
-    } else {
+    } 
+    else //if not piped
+    {
         // check for FZF_DEFAULT_COMMAND env var
         const char* cmd = std::getenv("FZF_DEFAULT_COMMAND");
         if (cmd && cmd[0]) {
@@ -400,8 +411,9 @@ int main(int argc, char** argv) {
                 }
                 pclose(fp);
             }
-        } else {
-            // built-in directory walker
+        }
+        else //if env default command not set use built in walker
+        {
             std::error_code ec;
             fs::recursive_directory_iterator it(root,
                 fs::directory_options::skip_permission_denied, ec), end;
@@ -420,7 +432,13 @@ int main(int argc, char** argv) {
     q.close();
     for (auto& t : workers) t.join();
 
-    run_tui();
+    if (filter_mode) {
+        auto results = match_results.sorted();
+        for (auto& r : results)
+            std::cout << r.path << '\n';
+    } else {
+        run_tui();
+    }
 
     if (piped && tty_fd != STDIN_FILENO) close(tty_fd);
     return 0;
