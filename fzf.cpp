@@ -162,6 +162,16 @@ std::vector<MatchResult> filter_paths(const std::string& q,
         int s = fuzzy_score(q, fname);
         if (s == NO_MATCH) s = fuzzy_score(q, p);
         if (s == NO_MATCH) continue;
+        // bonus when query matches the entire filename stem exactly
+        size_t dot = fname.rfind('.');
+        std::string stem = (dot == std::string::npos) ? fname : fname.substr(0, dot);
+        if (stem.size() == q.size()) {
+            bool exact = true;
+            for (size_t i = 0; i < q.size(); ++i)
+                if (std::tolower((unsigned char)q[i]) != std::tolower((unsigned char)stem[i]))
+                    { exact = false; break; }
+            if (exact) s += 32;
+        }
         results.push_back({p, s});
     }
     std::sort(results.begin(), results.end(),

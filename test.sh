@@ -144,7 +144,10 @@ out=$(printf "src/foo_bar.cpp\nsrc/fooXbar.cpp\n" | $FZF --filter fb | head -1)
 run_test "score: word boundary match beats mid-word" "foo_bar" "$out"
 
 out=$(printf "a_b_c.txt\nabc.txt\na__b__c.txt\n" | $FZF --filter abc | head -1)
-run_test "score: word boundary beats consecutive" "a_b_c.txt" "$out"
+run_test "score: exact stem match ranked first" "abc.txt" "$out"
+
+out=$(printf "xa_b_c.txt\nxabc.txt\nxa__b__c.txt\n" | $FZF --filter abc | head -1)
+run_test "score: word boundary beats consecutive (no exact stem)" "xa_b_c.txt" "$out"
 
 # --- edge cases ---
 echo ""
