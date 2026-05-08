@@ -211,10 +211,12 @@ Key read_key() {
     char c;
     if (read(tty_fd, &c, 1) != 1) return Key::NONE;
 
-    if (c == '\n' || c == '\r') return Key::ENTER;
-    if (c == 'q') return Key::QUIT;
-    if (c == 'k') return Key::UP;
-    if (c == 'j') return Key::DOWN;
+    if (c == '\r') return Key::ENTER;
+    if (c == 3) return Key::QUIT;    // Ctrl-c
+    if (c == 16) return Key::UP;     // Ctrl-p
+    if (c == 11) return Key::UP;     // Ctrl-k
+    if (c == 14) return Key::DOWN;   // Ctrl-n
+    if (c == '\n') return Key::DOWN; // Ctrl-j (same byte as \n, Enter sends \r in raw mode)
 
     if (c == '\033') {
         char seq[2];
@@ -282,8 +284,8 @@ void run_tui() {
         buf += ";1H";
         buf += "\033[1;37;44m ";
         buf += std::to_string(results.size());
-        buf += " matches | \xe2\x86\x91\xe2\x86\x93/jk navigate | Enter select | q quit";
-        int fpad = term.cols - 52;
+        buf += " matches | C-n/C-p/C-j/C-k navigate | Enter select | C-c quit";
+        int fpad = term.cols - 63;
         if (fpad > 0) buf.append(fpad, ' ');
         buf += "\033[0m";
 
