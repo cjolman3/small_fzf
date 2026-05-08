@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <climits>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -76,34 +77,26 @@ struct MatchResult {
     int score;
 };
 
-// ---------- thread-safe results container ----------
-class MatchResults {
-    std::vector<MatchResult> results;
+// ---------- thread-safe path collector ----------
+class PathList {
+    std::vector<std::string> paths;
     std::mutex mtx;
 public:
-    void add(std::string path, int score) {
+    void add(std::string p) {
         std::lock_guard<std::mutex> lk(mtx);
-        results.push_back({std::move(path), score});
+        paths.push_back(std::move(p));
     }
-
-    std::vector<MatchResult> sorted() {
+    std::vector<std::string> get() {
         std::lock_guard<std::mutex> lk(mtx);
-        auto copy = results;
-        std::sort(copy.begin(), copy.end(),
-                  [](const MatchResult& a, const MatchResult& b) {
-                      return a.score > b.score;
-                  });
-        return copy;
-    }
-
-    size_t size() {
-        std::lock_guard<std::mutex> lk(mtx);
-        return results.size();
+        return paths;
     }
 };
 
 // ---------- fuzzy scorer (fzf-lite) ----------
-// Returns -1 if query chars can't all be matched in order, else a score.
+// Returns INT_MIN if query chars can't all be matched in order, else a score.
+// Score can be negative (many gaps) but still represents a valid match.
+static const int NO_MATCH = INT_MIN;
+
 int fuzzy_score(const std::string& query, const std::string& text) {
     if (query.empty()) return 0;
     int score = 0, last_match = -2;
@@ -139,8 +132,43 @@ int fuzzy_score(const std::string& query, const std::string& text) {
             score -= 1;
         }
     }
-    //when weve matched the entire query return the score, otherwise return -1 meaning no match
-    return query_index == query.size() ? score : -1;
+    //when weve matched the entire query return the score, otherwise no match
+    return query_index == query.size() ? score : NO_MATCH;
+}
+
+// ---------- fuzzy match positions ----------
+std::vector<size_t> fuzzy_positions(const std::string& query, const std::string& text) {
+    std::vector<size_t> pos;
+    if (query.empty()) return pos;
+    size_t qi = 0;
+    for (size_t i = 0; i < text.size() && qi < query.size(); ++i) {
+        if ((char)std::tolower((unsigned char)text[i]) ==
+            (char)std::tolower((unsigned char)query[qi])) {
+            pos.push_back(i);
+            ++qi;
+        }
+    }
+    if (qi < query.size()) pos.clear();
+    return pos;
+}
+
+// ---------- filter + sort paths against a query ----------
+std::vector<MatchResult> filter_paths(const std::string& q,
+                                      const std::vector<std::string>& paths) {
+    std::vector<MatchResult> results;
+    for (auto& p : paths) {
+        size_t slash = p.rfind('/');
+        std::string fname = (slash == std::string::npos) ? p : p.substr(slash + 1);
+        int s = fuzzy_score(q, fname);
+        if (s == NO_MATCH) s = fuzzy_score(q, p);
+        if (s == NO_MATCH) continue;
+        results.push_back({p, s});
+    }
+    std::sort(results.begin(), results.end(),
+              [](const MatchResult& a, const MatchResult& b) {
+                  return a.score > b.score;
+              });
+    return results;
 }
 
 // ---------- skip list (tiny gitignore-lite) ----------
@@ -150,25 +178,16 @@ static const std::unordered_set<std::string> SKIP_DIRS = {
 };
 
 // ---------- globals ----------
-MatchResults match_results;
-std::string query;
+PathList all_paths;
+std::string initial_query;
 int tty_fd = STDIN_FILENO;
 bool filter_mode = false;
 
 // ---------- worker ----------
 void worker(BQueue<std::string>& q) {
     std::string path;
-    //keep popping paths off the queue, we will leave this loop when queue is empty or we get mutex blocked
-    while (q.pop(path))
-    {
-        // Score on filename first; fall back to full path if no match.
-        size_t slash = path.rfind('/');
-        std::string fname = (slash == std::string::npos) ? path : path.substr(slash + 1);
-        int s = fuzzy_score(query, fname);
-        if (s < 0) s = fuzzy_score(query, path);
-        if (s < 0) continue;
-
-        match_results.add(path, s);
+    while (q.pop(path)) {
+        all_paths.add(std::move(path));
     }
 }
 
@@ -180,7 +199,8 @@ struct Terminal {
     void enter_raw() {
         tcgetattr(tty_fd, &orig);
         struct termios raw = orig;
-        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_iflag &= ~(ICRNL | IXON);
+        raw.c_lflag &= ~(ICANON | ECHO | ISIG);
         raw.c_cc[VMIN] = 0;
         raw.c_cc[VTIME] = 1;
         tcsetattr(tty_fd, TCSAFLUSH, &raw);
@@ -205,77 +225,113 @@ void write_stderr(const std::string& s) {
 }
 #pragma GCC diagnostic pop
 
-enum class Key { UP, DOWN, ENTER, QUIT, NONE };
+struct KeyEvent {
+    enum Type { UP, DOWN, ENTER, QUIT, TAB, BACKSPACE, CTRL_U, CHAR, NONE } type;
+    char ch = 0;
+};
 
-Key read_key() {
+KeyEvent read_key() {
     char c;
-    if (read(tty_fd, &c, 1) != 1) return Key::NONE;
+    if (read(tty_fd, &c, 1) != 1) return {KeyEvent::NONE};
 
-    if (c == '\r') return Key::ENTER;
-    if (c == 3) return Key::QUIT;    // Ctrl-c
-    if (c == 16) return Key::UP;     // Ctrl-p
-    if (c == 11) return Key::UP;     // Ctrl-k
-    if (c == 14) return Key::DOWN;   // Ctrl-n
-    if (c == '\n') return Key::DOWN; // Ctrl-j (same byte as \n, Enter sends \r in raw mode)
+    if (c == '\r') return {KeyEvent::ENTER};
+    if (c == 3) return {KeyEvent::QUIT};       // Ctrl-c
+    if (c == 16) return {KeyEvent::UP};        // Ctrl-p
+    if (c == 11) return {KeyEvent::UP};        // Ctrl-k
+    if (c == 14) return {KeyEvent::DOWN};      // Ctrl-n
+    if (c == '\n') return {KeyEvent::DOWN};    // Ctrl-j
+    if (c == 9) return {KeyEvent::TAB};        // Tab
+    if (c == 127 || c == 8) return {KeyEvent::BACKSPACE};
+    if (c == 21) return {KeyEvent::CTRL_U};    // Ctrl-u
 
     if (c == '\033') {
         char seq[2];
-        if (read(tty_fd, &seq[0], 1) != 1) return Key::QUIT;
-        if (read(tty_fd, &seq[1], 1) != 1) return Key::QUIT;
+        if (read(tty_fd, &seq[0], 1) != 1) return {KeyEvent::QUIT};
+        if (read(tty_fd, &seq[1], 1) != 1) return {KeyEvent::QUIT};
         if (seq[0] == '[') {
-            if (seq[1] == 'A') return Key::UP;
-            if (seq[1] == 'B') return Key::DOWN;
+            if (seq[1] == 'A') return {KeyEvent::UP};
+            if (seq[1] == 'B') return {KeyEvent::DOWN};
         }
-        return Key::NONE;
+        return {KeyEvent::NONE};
     }
-    return Key::NONE;
+
+    if (c >= 32 && c <= 126) return {KeyEvent::CHAR, c};
+    return {KeyEvent::NONE};
 }
 
-void run_tui() {
-    auto results = match_results.sorted();
-    if (results.empty()) {
-        std::cerr << "No matches found.\n";
-        return;
-    }
-
+void run_tui(const std::vector<std::string>& paths) {
     Terminal term;
     term.update_size();
     term.enter_raw();
 
-    // alternate screen buffer, hide cursor
+    std::string query_buf = initial_query;
+    auto results = filter_paths(query_buf, paths);
+    std::unordered_set<std::string> selected_set;
+
     std::string buf;
     buf += "\033[?1049h\033[?25l";
     write_stderr(buf);
 
     int selected = 0;
     int offset = 0;
+    if (term.rows < 5) term.rows = 24;
+    if (term.cols < 10) term.cols = 80;
     int visible = term.rows - 2;
+
+    auto clamp_selection = [&]() {
+        if (results.empty()) { selected = 0; offset = 0; return; }
+        if (selected >= (int)results.size()) selected = (int)results.size() - 1;
+        if (selected < 0) selected = 0;
+        if (selected < offset) offset = selected;
+        if (selected >= offset + visible) offset = selected - visible + 1;
+    };
 
     auto draw = [&]() {
         buf.clear();
-        buf += "\033[H"; // cursor home
+        buf += "\033[H";
 
-        // header
+        // header with editable query
         buf += "\033[1;37;44m fzf > ";
-        buf += query;
-        int pad = term.cols - 7 - (int)query.size();
+        buf += query_buf;
+        int pad = term.cols - 7 - (int)query_buf.size();
         if (pad > 0) buf.append(pad, ' ');
         buf += "\033[0m\n";
 
-        // results
+        // results with match highlighting
         for (int i = 0; i < visible; ++i) {
             int idx = offset + i;
             if (idx < (int)results.size()) {
-                if (idx == selected) {
-                    buf += "\033[1;33m> ";
-                    buf += results[idx].path;
-                    buf += "\033[0m";
-                } else {
-                    buf += "  ";
-                    buf += results[idx].path;
+                const auto& path = results[idx].path;
+                bool is_cursor = (idx == selected);
+                bool is_selected = selected_set.count(path);
+
+                // prefix: "> * ", ">   ", "  * ", "    "
+                if (is_cursor) buf += "\033[1;33m>";
+                else buf += " ";
+                if (is_selected) buf += " *";
+                else buf += "  ";
+                buf += " ";
+
+                // render path with match highlighting
+                auto positions = fuzzy_positions(query_buf, path);
+                std::unordered_set<size_t> pos_set(positions.begin(), positions.end());
+
+                for (size_t ci = 0; ci < path.size(); ++ci) {
+                    if (pos_set.count(ci)) {
+                        if (is_cursor)
+                            buf += "\033[1;33;4m";
+                        else
+                            buf += "\033[1;32m";
+                        buf += path[ci];
+                        buf += "\033[0m";
+                        if (is_cursor) buf += "\033[1;33m";
+                    } else {
+                        buf += path[ci];
+                    }
                 }
+                buf += "\033[0m";
             }
-            buf += "\033[K\n"; // clear to end of line
+            buf += "\033[K\n";
         }
 
         // footer
@@ -284,8 +340,15 @@ void run_tui() {
         buf += ";1H";
         buf += "\033[1;37;44m ";
         buf += std::to_string(results.size());
-        buf += " matches | C-n/C-p/C-j/C-k navigate | Enter select | C-c quit";
-        int fpad = term.cols - 63;
+        buf += "/";
+        buf += std::to_string(paths.size());
+        if (!selected_set.empty()) {
+            buf += " (";
+            buf += std::to_string(selected_set.size());
+            buf += " selected)";
+        }
+        buf += " | Tab multi-select | Enter accept | C-c quit";
+        int fpad = term.cols - (int)buf.size() + 20;
         if (fpad > 0) buf.append(fpad, ' ');
         buf += "\033[0m";
 
@@ -296,34 +359,69 @@ void run_tui() {
 
     bool running = true;
     while (running) {
-        Key k = read_key();
-        switch (k) {
-        case Key::UP:
+        KeyEvent k = read_key();
+        switch (k.type) {
+        case KeyEvent::CHAR:
+            query_buf += k.ch;
+            results = filter_paths(query_buf, paths);
+            selected = 0;
+            offset = 0;
+            break;
+        case KeyEvent::BACKSPACE:
+            if (!query_buf.empty()) {
+                query_buf.pop_back();
+                results = filter_paths(query_buf, paths);
+                selected = 0;
+                offset = 0;
+            }
+            break;
+        case KeyEvent::CTRL_U:
+            query_buf.clear();
+            results = filter_paths(query_buf, paths);
+            selected = 0;
+            offset = 0;
+            break;
+        case KeyEvent::UP:
             if (selected > 0) --selected;
-            if (selected < offset) offset = selected;
+            clamp_selection();
             break;
-        case Key::DOWN:
-            if (selected < (int)results.size() - 1) ++selected;
-            if (selected >= offset + visible) offset = selected - visible + 1;
+        case KeyEvent::DOWN:
+            if (!results.empty() && selected < (int)results.size() - 1) ++selected;
+            clamp_selection();
             break;
-        case Key::ENTER:
-            // restore terminal, print selection to stdout
+        case KeyEvent::TAB:
+            if (!results.empty()) {
+                auto& p = results[selected].path;
+                if (selected_set.count(p)) selected_set.erase(p);
+                else selected_set.insert(p);
+                if (selected < (int)results.size() - 1) ++selected;
+                clamp_selection();
+            }
+            break;
+        case KeyEvent::ENTER: {
             buf.clear();
             buf += "\033[?25h\033[?1049l";
             write_stderr(buf);
             term.restore();
-            std::cout << results[selected].path << '\n';
+            if (!selected_set.empty()) {
+                for (auto& r : results)
+                    if (selected_set.count(r.path))
+                        std::cout << r.path << '\n';
+            } else if (!results.empty()) {
+                std::cout << results[selected].path << '\n';
+            }
+            std::cout.flush();
             return;
-        case Key::QUIT:
+        }
+        case KeyEvent::QUIT:
             running = false;
             break;
-        case Key::NONE:
+        case KeyEvent::NONE:
             break;
         }
         draw();
     }
 
-    // restore terminal without printing selection
     buf.clear();
     buf += "\033[?25h\033[?1049l";
     write_stderr(buf);
@@ -355,28 +453,17 @@ int main(int argc, char** argv) {
 
     if (positional.size() > 2)
     {
-        std::cerr << "too many args, usage: fzf [--filter] <query> [path]\n";
+        std::cerr << "too many args, usage: fzf [--filter] [query] [path]\n";
+        return 1;
     }
     else if (positional.size() == 2)
     {
-        query = positional[0];
+        initial_query = positional[0];
         root  = positional[1];
     }
     else if (positional.size() == 1)
     {
-        query = positional[0];
-    }
-    else if (positional.size() == 0 && piped)
-    {
-        //dont really need to do anything here, just using fzf as a list picker
-        NULL;
-    }
-    //eventuall need something here if size is 0 and not piped just find all files
-    else
-    {
-        //something is wrong with the arguments or usage
-        std::cerr << "usage: fzf [--filter] <query> [path]\n";
-        return 1;
+        initial_query = positional[0];
     }
 
     //get how many threads I have
@@ -434,12 +521,14 @@ int main(int argc, char** argv) {
     q.close();
     for (auto& t : workers) t.join();
 
+    auto paths = all_paths.get();
+
     if (filter_mode) {
-        auto results = match_results.sorted();
+        auto results = filter_paths(initial_query, paths);
         for (auto& r : results)
             std::cout << r.path << '\n';
     } else {
-        run_tui();
+        run_tui(paths);
     }
 
     if (piped && tty_fd != STDIN_FILENO) close(tty_fd);
