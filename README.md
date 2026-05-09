@@ -1,4 +1,4 @@
-# fzf: minimal multicore fuzzy finder with TUI
+# cppfzf: minimal multicore fuzzy finder with TUI
 
 A single-file C++17 fuzzy file finder with an interactive terminal UI.
 No external dependencies -- builds with only a C++ compiler and pthreads.
