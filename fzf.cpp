@@ -29,8 +29,10 @@
 namespace fs = std::filesystem;
 
 // ---------- bounded concurrent queue ----------
+// this implements a thread safe queue
 template <typename T>
-class BQueue {
+class BQueue
+{
     std::queue<T> q;
     std::mutex m;
     std::condition_variable cv_push, cv_pop;
@@ -40,53 +42,68 @@ public:
     //Constructor
     explicit BQueue(size_t c) : cap(c) {}
 
-    void push(T v) {
+    void push(T v)
+    {
         //lock the mutex
         std::unique_lock<std::mutex> lk(m);
         //sleep this thread until the size of the queue is below capacity
         cv_push.wait(lk, [&]{ return q.size() < cap; });
-        //once we wake up and continue, put the input on the queue, I have no clue why we use std::move 
+        //once we wake up and continue, put the input on the queue
+        //claude decided to use move, Id have to measure performance
+        //      to see if it actually helped, I think move is just
+        //      throwing a reference around safely
         q.push(std::move(v));
-        //notify a thread that we can work on the queue now
+        //notify another thread that we can work on the queue now
         cv_pop.notify_one();
     }
-    bool pop(T& out) {
+    bool pop(T& out)
+    {
         //lock the mutex
         std::unique_lock<std::mutex> lk(m);
         //sleep this thread until the queue has something or done is true
+        //      done being true signifies that all our threads need to close out
         cv_pop.wait(lk, [&]{ return !q.empty() || done; });
-        //if the queue is empty and we know already know dont is true from above then return false
+        //if the queue is empty and we know already know done is true from above then return false
         if (q.empty()) return false;
-        //again I dont know what std::move is doing, pop off the top of queue
+        //pop off top off queue and nicely "move" it
         out = std::move(q.front()); q.pop();
-        //notify a thread that we can work on the queue now
+        //notify another thread that we can work on the queue now
         cv_push.notify_one();
-        //if we got this far we know done is true and we have popped something off queue, return true
+        //if we got this far we know done is false and we have popped something off queue, return true
         return true;
     }
-    void close() {
+    void close()
+    {
+        //these braces are here to create a temp scope,
+        //      this is to ensure the mutex in unlocked immeediately when
+        //      done=true
         { std::lock_guard<std::mutex> lk(m); done = true; }
-        //wake everyone up so they can all see dont = true
+        //wake everyone up so they can all see done = true
         cv_pop.notify_all();
     }
 };
 
 // ---------- match result ----------
-struct MatchResult {
+// quick struct to store a singular hit with a score
+struct MatchResult
+{
     std::string path;
     int score;
 };
 
 // ---------- thread-safe path collector ----------
-class PathList {
+class PathList
+{
     std::vector<std::string> paths;
     std::mutex mtx;
 public:
-    void add(std::string p) {
+    void add(std::string p)
+    {
         std::lock_guard<std::mutex> lk(mtx);
         paths.push_back(std::move(p));
     }
-    std::vector<std::string> get() {
+    std::vector<std::string> get()
+    {
         std::lock_guard<std::mutex> lk(mtx);
         return paths;
     }
@@ -97,7 +114,8 @@ public:
 // Score can be negative (many gaps) but still represents a valid match.
 static const int NO_MATCH = INT_MIN;
 
-int fuzzy_score(const std::string& query, const std::string& text) {
+int fuzzy_score(const std::string& query, const std::string& text)
+{
     if (query.empty()) return 0;
     int score = 0, last_match = -2;
     size_t query_index = 0;
@@ -137,7 +155,8 @@ int fuzzy_score(const std::string& query, const std::string& text) {
 }
 
 // ---------- fuzzy match positions ----------
-std::vector<size_t> fuzzy_positions(const std::string& query, const std::string& text) {
+std::vector<size_t> fuzzy_positions(const std::string& query, const std::string& text)
+{
     std::vector<size_t> pos;
     if (query.empty()) return pos;
     size_t qi = 0;
@@ -154,7 +173,8 @@ std::vector<size_t> fuzzy_positions(const std::string& query, const std::string&
 
 // ---------- filter + sort paths against a query ----------
 std::vector<MatchResult> filter_paths(const std::string& q,
-                                      const std::vector<std::string>& paths) {
+                                      const std::vector<std::string>& paths)
+{
     std::vector<MatchResult> results;
     for (auto& p : paths) {
         size_t slash = p.rfind('/');
@@ -194,7 +214,8 @@ int tty_fd = STDIN_FILENO;
 bool filter_mode = false;
 
 // ---------- worker ----------
-void worker(BQueue<std::string>& q) {
+void worker(BQueue<std::string>& q)
+{
     std::string path;
     while (q.pop(path)) {
         all_paths.add(std::move(path));
@@ -202,11 +223,13 @@ void worker(BQueue<std::string>& q) {
 }
 
 // ---------- TUI ----------
-struct Terminal {
+struct Terminal
+{
     struct termios orig;
     int rows, cols;
 
-    void enter_raw() {
+    void enter_raw()
+    {
         tcgetattr(tty_fd, &orig);
         struct termios raw = orig;
         raw.c_iflag &= ~(ICRNL | IXON);
@@ -216,11 +239,13 @@ struct Terminal {
         tcsetattr(tty_fd, TCSAFLUSH, &raw);
     }
 
-    void restore() {
+    void restore()
+    {
         tcsetattr(tty_fd, TCSAFLUSH, &orig);
     }
 
-    void update_size() {
+    void update_size()
+    {
         struct winsize ws;
         ioctl(tty_fd, TIOCGWINSZ, &ws);
         rows = ws.ws_row;
@@ -230,17 +255,20 @@ struct Terminal {
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-result"
-void write_stderr(const std::string& s) {
+void write_stderr(const std::string& s)
+{
     write(STDERR_FILENO, s.data(), s.size());
 }
 #pragma GCC diagnostic pop
 
-struct KeyEvent {
+struct KeyEvent
+{
     enum Type { UP, DOWN, ENTER, QUIT, TAB, BACKSPACE, CTRL_U, CHAR, NONE } type;
     char ch = 0;
 };
 
-KeyEvent read_key() {
+KeyEvent read_key()
+{
     char c;
     if (read(tty_fd, &c, 1) != 1) return {KeyEvent::NONE};
 
@@ -269,7 +297,8 @@ KeyEvent read_key() {
     return {KeyEvent::NONE};
 }
 
-void run_tui(const std::vector<std::string>& paths) {
+void run_tui(const std::vector<std::string>& paths)
+{
     Terminal term;
     term.update_size();
     term.enter_raw();
@@ -439,7 +468,8 @@ void run_tui(const std::vector<std::string>& paths) {
 }
 
 // ---------- main ----------
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
 
     // parse flags first so we know if we need the TUI
     std::vector<std::string> positional;
