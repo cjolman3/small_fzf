@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v*' # Trigger only on version tags like v1.0.0
+      - 'v*'
+  workflow_dispatch: # Allows manual triggering for testing
 
 jobs:
   release:
