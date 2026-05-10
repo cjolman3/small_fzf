@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger only on version tags like v1.0.0
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to create a release and upload assets
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: sudo apt-get update && sudo apt-get install -y build-essential expect
+
+      - name: Build project
+        run: make
+
+      - name: Run tests
+        run: |
+          chmod +x test_all.sh
+          ./test_all.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: bin/fzf
+          # This will use the tag name as the release name and tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
