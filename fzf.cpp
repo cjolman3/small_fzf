@@ -235,7 +235,7 @@ struct Terminal
         raw.c_iflag &= ~(ICRNL | IXON);
         raw.c_lflag &= ~(ICANON | ECHO | ISIG);
         raw.c_cc[VMIN] = 0;
-        raw.c_cc[VTIME] = 1;
+        raw.c_cc[VTIME] = 3;
         tcsetattr(tty_fd, TCSAFLUSH, &raw);
     }
 
