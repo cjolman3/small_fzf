@@ -142,12 +142,12 @@ fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
     send "\012"
     sleep 0.1
     send "\r"'
-pass "FIX THIS, BUG"
-#if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
-#    pass "Ctrl-j moves down"
-#else
-#    fail "Ctrl-j moves down" "got: '$FZF_STDOUT'"
-#fi
+#pass "FIX THIS, BUG"
+if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
+    pass "Ctrl-j moves down"
+else
+    fail "Ctrl-j moves down" "got: '$FZF_STDOUT'"
+fi
 
 fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
     send "\012"

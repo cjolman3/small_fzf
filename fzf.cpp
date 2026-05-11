@@ -194,7 +194,7 @@ std::vector<MatchResult> filter_paths(const std::string& q,
         }
         results.push_back({p, s});
     }
-    std::sort(results.begin(), results.end(),
+    std::stable_sort(results.begin(), results.end(),
               [](const MatchResult& a, const MatchResult& b) {
                   return a.score > b.score;
               });
