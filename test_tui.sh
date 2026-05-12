@@ -94,11 +94,11 @@ fi
 
 fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
     send "\033\[A"
-    sleep 0.1
+    sleep 0.3
     send "\033\[A"
-    sleep 0.1
+    sleep 0.3
     send "\033\[B"
-    sleep 0.1
+    sleep 0.3
     send "\r"'
 if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
     pass "down arrow goes back down"
