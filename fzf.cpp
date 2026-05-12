@@ -303,7 +303,11 @@ void run_tui(const std::vector<std::string>& paths)
     term.update_size();
     term.enter_raw();
 
+    //the initial query came from the fzf call, use that for now
+    // may get replaced if user starts typing, a little worried about
+    // this not being initialized
     std::string query_buf = initial_query;
+    //start the first fuzzy search, what happens when query is empty?
     auto results = filter_paths(query_buf, paths);
     std::unordered_set<std::string> selected_set;
 
@@ -402,6 +406,7 @@ void run_tui(const std::vector<std::string>& paths)
         switch (k.type) {
         case KeyEvent::CHAR:
             query_buf += k.ch;
+            //every time a character is typed redo the search
             results = filter_paths(query_buf, paths);
             selected = 0;
             offset = 0;
@@ -409,6 +414,7 @@ void run_tui(const std::vector<std::string>& paths)
         case KeyEvent::BACKSPACE:
             if (!query_buf.empty()) {
                 query_buf.pop_back();
+                //every time a character is removed redo the search
                 results = filter_paths(query_buf, paths);
                 selected = 0;
                 offset = 0;
@@ -515,17 +521,26 @@ int main(int argc, char** argv)
     BQueue<std::string> q(1024);
     std::vector<std::thread> workers;
     //spawn n threads
+    //use emplace to construct a thread in place
+    //this is almost black magic, a little complicated to be doing here
+    //emplace_back knows to call the vector's element's constructor with the args provided
+    //so we call std::thread(worker, q) which says construct me a thread using the worker function
+    // and supply a reference to q to the worker function
     for (unsigned i = 0; i < n; ++i) workers.emplace_back(worker, std::ref(q));
+    //these threads will now go off and start to continuously pop off all the 
+    //paths from q our bounded queue, and build the global all_paths
+    //until we tell the threads to stop
 
     if (piped)
     {
         // read paths from stdin pipe
+        // and load the concurrent queue
         std::string line;
         while (std::getline(std::cin, line)) {
             if (!line.empty()) q.push(std::move(line));
         }
     } 
-    else //if not piped
+    else //if not piped then we either use default command or manually walk
     {
         // check for FZF_DEFAULT_COMMAND env var
         const char* cmd = std::getenv("FZF_DEFAULT_COMMAND");
@@ -558,16 +573,29 @@ int main(int argc, char** argv)
         }
     }
 
+    //close the queue bc we are done messing with out bounded queue
     q.close();
+    //loop through all our workers and call join so our main doesnt
+    //continur past here without all our workers finishing
     for (auto& t : workers) t.join();
 
+    //all paths should be built now, get it and store it
+    //this represent either every file from . if we used built in walker
+    // or all the paths called from the default
+    // or all the paths form the stdin
+    // this isnt going to change unless we reboot fzf
     auto paths = all_paths.get();
 
-    if (filter_mode) {
+    // filter mode is our debug mode to not run the tui
+    if (filter_mode)
+    {
         auto results = filter_paths(initial_query, paths);
         for (auto& r : results)
             std::cout << r.path << '\n';
-    } else {
+    }
+    else
+    {
+        //everything that we can search on is built, supply this to the tui
         run_tui(paths);
     }
 
