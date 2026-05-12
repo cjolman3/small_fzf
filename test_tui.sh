@@ -83,27 +83,27 @@ else
 fi
 
 fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
-    send "\033\[B"
-    sleep 0.1
-    send "\r"'
-if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
-    pass "down arrow+enter outputs second item"
-else
-    fail "down arrow+enter outputs second item" "got: '$FZF_STDOUT'"
-fi
-
-fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
-    send "\033\[B"
-    sleep 0.1
-    send "\033\[B"
-    sleep 0.1
     send "\033\[A"
     sleep 0.1
     send "\r"'
 if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
-    pass "up arrow goes back up"
+    pass "up arrow+enter outputs second item"
 else
-    fail "up arrow goes back up" "got: '$FZF_STDOUT'"
+    fail "up arrow+enter outputs second item" "got: '$FZF_STDOUT'"
+fi
+
+fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
+    send "\033\[A"
+    sleep 0.1
+    send "\033\[A"
+    sleep 0.1
+    send "\033\[B"
+    sleep 0.1
+    send "\r"'
+if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
+    pass "down arrow goes back down"
+else
+    fail "down arrow goes back down" "got: '$FZF_STDOUT'"
 fi
 
 # --- Ctrl-n / Ctrl-p navigation ---
@@ -111,20 +111,6 @@ echo ""
 echo "-- Ctrl-n / Ctrl-p navigation --"
 
 fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
-    send "\016"
-    sleep 0.1
-    send "\r"'
-if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
-    pass "Ctrl-n moves down"
-else
-    fail "Ctrl-n moves down" "got: '$FZF_STDOUT'"
-fi
-
-fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
-    send "\016"
-    sleep 0.1
-    send "\016"
-    sleep 0.1
     send "\020"
     sleep 0.1
     send "\r"'
@@ -134,26 +120,25 @@ else
     fail "Ctrl-p moves up" "got: '$FZF_STDOUT'"
 fi
 
+fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
+    send "\020"
+    sleep 0.1
+    send "\020"
+    sleep 0.1
+    send "\016"
+    sleep 0.1
+    send "\r"'
+if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
+    pass "Ctrl-n moves down"
+else
+    fail "Ctrl-n moves down" "got: '$FZF_STDOUT'"
+fi
+
 # --- Ctrl-j / Ctrl-k navigation ---
 echo ""
 echo "-- Ctrl-j / Ctrl-k navigation --"
 
 fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
-    send "\012"
-    sleep 0.1
-    send "\r"'
-#pass "FIX THIS, BUG"
-if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
-    pass "Ctrl-j moves down"
-else
-    fail "Ctrl-j moves down" "got: '$FZF_STDOUT'"
-fi
-
-fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
-    send "\012"
-    sleep 0.1
-    send "\012"
-    sleep 0.1
     send "\013"
     sleep 0.1
     send "\r"'
@@ -163,36 +148,50 @@ else
     fail "Ctrl-k moves up" "got: '$FZF_STDOUT'"
 fi
 
+fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
+    send "\013"
+    sleep 0.1
+    send "\013"
+    sleep 0.1
+    send "\012"
+    sleep 0.1
+    send "\r"'
+if echo "$FZF_STDOUT" | grep -qF "bbb.txt"; then
+    pass "Ctrl-j moves down"
+else
+    fail "Ctrl-j moves down" "got: '$FZF_STDOUT'"
+fi
+
 # --- boundary behavior ---
 echo ""
 echo "-- boundary behavior --"
 
 fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
-    send "\033\[A"
+    send "\033\[B"
     sleep 0.1
-    send "\033\[A"
+    send "\033\[B"
     sleep 0.1
     send "\r"'
 if echo "$FZF_STDOUT" | grep -qF "aaa.txt"; then
-    pass "up at top stays at first item"
+    pass "down at bottom stays at first item"
 else
-    fail "up at top stays at first item" "got: '$FZF_STDOUT'"
+    fail "down at bottom stays at first item" "got: '$FZF_STDOUT'"
 fi
 
 fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
-    send "\033\[B"
+    send "\033\[A"
     sleep 0.1
-    send "\033\[B"
+    send "\033\[A"
     sleep 0.1
-    send "\033\[B"
+    send "\033\[A"
     sleep 0.1
-    send "\033\[B"
+    send "\033\[A"
     sleep 0.1
     send "\r"'
 if echo "$FZF_STDOUT" | grep -qF "ccc.txt"; then
-    pass "down at bottom stays at last item"
+    pass "up at top stays at last item"
 else
-    fail "down at bottom stays at last item" "got: '$FZF_STDOUT'"
+    fail "up at top stays at last item" "got: '$FZF_STDOUT'"
 fi
 
 # --- quit behavior ---
@@ -361,7 +360,7 @@ out=$(expect -c '
     expect eof
 ' 2>/dev/null)
 
-if echo "$out" | grep -qP '\x1b\[1;3[23](;4)?m'; then
+if echo "$out" | grep -qP '\x1b\[1(;4|;3[23](;4)?)m'; then
     pass "matched chars have highlight ANSI codes"
 else
     fail "matched chars have highlight ANSI codes" "got: $out"
@@ -400,7 +399,7 @@ fi
 fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
     send "\t"
     sleep 0.1
-    send "\033\[A"
+    send "\033\[B"
     sleep 0.1
     send "\t"
     sleep 0.1
@@ -414,6 +413,8 @@ fi
 
 # Multi-select Enter outputs 2 selected items
 fzf_select 'aaa.txt\nbbb.txt\nccc.txt\n' "" "3/3" '
+    send "\033\[A"
+    sleep 0.2
     send "\t"
     sleep 0.2
     send "\t"

@@ -333,15 +333,8 @@ void run_tui(const std::vector<std::string>& paths)
         buf.clear();
         buf += "\033[H";
 
-        // header with editable query
-        buf += "\033[1;37;44m fzf > ";
-        buf += query_buf;
-        int pad = term.cols - 7 - (int)query_buf.size();
-        if (pad > 0) buf.append(pad, ' ');
-        buf += "\033[0m\n";
-
-        // results with match highlighting
-        for (int i = 0; i < visible; ++i) {
+        // results with match highlighting (reversed: best match at bottom)
+        for (int i = visible - 1; i >= 0; --i) {
             int idx = offset + i;
             if (idx < (int)results.size()) {
                 const auto& path = results[idx].path;
@@ -349,7 +342,7 @@ void run_tui(const std::vector<std::string>& paths)
                 bool is_selected = selected_set.count(path);
 
                 // prefix: "> * ", ">   ", "  * ", "    "
-                if (is_cursor) buf += "\033[1;33m>";
+                if (is_cursor) buf += "\033[1m>";
                 else buf += " ";
                 if (is_selected) buf += " *";
                 else buf += "  ";
@@ -362,12 +355,12 @@ void run_tui(const std::vector<std::string>& paths)
                 for (size_t ci = 0; ci < path.size(); ++ci) {
                     if (pos_set.count(ci)) {
                         if (is_cursor)
-                            buf += "\033[1;33;4m";
+                            buf += "\033[1;4m";
                         else
                             buf += "\033[1;32m";
                         buf += path[ci];
                         buf += "\033[0m";
-                        if (is_cursor) buf += "\033[1;33m";
+                        if (is_cursor) buf += "\033[1m";
                     } else {
                         buf += path[ci];
                     }
@@ -377,11 +370,8 @@ void run_tui(const std::vector<std::string>& paths)
             buf += "\033[K\n";
         }
 
-        // footer
-        buf += "\033[";
-        buf += std::to_string(term.rows);
-        buf += ";1H";
-        buf += "\033[1;37;44m ";
+        // info line
+        buf += "\033[7m ";
         buf += std::to_string(results.size());
         buf += "/";
         buf += std::to_string(paths.size());
@@ -391,8 +381,15 @@ void run_tui(const std::vector<std::string>& paths)
             buf += " selected)";
         }
         buf += " | Tab multi-select | Enter accept | C-c quit";
-        int fpad = term.cols - (int)buf.size() + 20;
+        int fpad = term.cols - (int)buf.size() + 5;
         if (fpad > 0) buf.append(fpad, ' ');
+        buf += "\033[0m\n";
+
+        // query bar at bottom
+        buf += "\033[7m fzf > ";
+        buf += query_buf;
+        int pad = term.cols - 7 - (int)query_buf.size();
+        if (pad > 0) buf.append(pad, ' ');
         buf += "\033[0m";
 
         write_stderr(buf);
@@ -426,11 +423,11 @@ void run_tui(const std::vector<std::string>& paths)
             selected = 0;
             offset = 0;
             break;
-        case KeyEvent::UP:
+        case KeyEvent::DOWN:
             if (selected > 0) --selected;
             clamp_selection();
             break;
-        case KeyEvent::DOWN:
+        case KeyEvent::UP:
             if (!results.empty() && selected < (int)results.size() - 1) ++selected;
             clamp_selection();
             break;
@@ -439,7 +436,7 @@ void run_tui(const std::vector<std::string>& paths)
                 auto& p = results[selected].path;
                 if (selected_set.count(p)) selected_set.erase(p);
                 else selected_set.insert(p);
-                if (selected < (int)results.size() - 1) ++selected;
+                if (selected > 0) --selected;
                 clamp_selection();
             }
             break;
